@@ -115,7 +115,8 @@ display(  # noqa: F821
 # MAGIC   size(amounts)                                                   AS order_count,
 # MAGIC   transform(amounts, a -> round(a * 1.1, 2))                      AS with_10pct_tax,
 # MAGIC   filter(amounts, a -> a >= 100)                                  AS big_orders,
-# MAGIC   aggregate(amounts, cast(0 AS decimal(20,2)), (acc, a) -> acc + a) AS total,
+# MAGIC   aggregate(amounts, cast(0 AS decimal(20,2)),
+# MAGIC             (acc, a) -> cast(acc + a AS decimal(20,2)))           AS total,
 # MAGIC   exists(amounts, a -> a > 500)                                   AS has_giant_order
 # MAGIC FROM customer_orders
 # MAGIC ORDER BY total DESC
@@ -124,9 +125,12 @@ display(  # noqa: F821
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC > **Exam trap:** `aggregate()`'s start value sets the result type. Starting
-# MAGIC > from `0` (an INT) with DECIMAL elements is a type-mismatch error — cast the
-# MAGIC > initial value, exactly as above.
+# MAGIC > **Exam trap:** `aggregate()`'s start value sets the accumulator type, and
+# MAGIC > the merge lambda must return exactly that type. Starting from `0` (an INT)
+# MAGIC > with DECIMAL elements is a type-mismatch error — and with DECIMAL, so is
+# MAGIC > a bare `acc + a`, because decimal addition widens the precision
+# MAGIC > (DECIMAL(20,2) + element → DECIMAL(21,2)). Cast both the initial value
+# MAGIC > **and** the lambda result, exactly as above.
 
 # COMMAND ----------
 
