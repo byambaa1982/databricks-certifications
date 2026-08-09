@@ -54,10 +54,14 @@ print(f"Cloning from {CATALOG}.{SOURCE_SCHEMA} -> {CATALOG}.{SCHEMA}")
 
 # MAGIC %md
 # MAGIC ## Create the study schema and clone the tables
-# MAGIC `DEEP CLONE` copies data **and** table properties — `silver_orders` keeps
-# MAGIC Change Data Feed enabled, which notebook 05 relies on.
+# MAGIC `DEEP CLONE` copies data **and** table properties, but it is not allowed on
+# MAGIC Streaming Tables / Materialized Views (which is what the Lakeflow pipeline
+# MAGIC produces) — those fall back to `CREATE TABLE AS SELECT`, and we re-enable
+# MAGIC Change Data Feed on `silver_orders` explicitly since notebook 05 relies on it.
 
 # COMMAND ----------
+
+from pyspark.errors import AnalysisException  # noqa: E402
 
 spark.sql(f"CREATE SCHEMA IF NOT EXISTS {CATALOG}.{SCHEMA}")  # noqa: F821
 spark.sql(  # noqa: F821
@@ -65,11 +69,24 @@ spark.sql(  # noqa: F821
 )  # streaming notebooks need somewhere to store checkpoints
 
 for table in TABLES:
-    spark.sql(  # noqa: F821
-        f"CREATE OR REPLACE TABLE {CATALOG}.{SCHEMA}.{table} "
-        f"DEEP CLONE {CATALOG}.{SOURCE_SCHEMA}.{table}"
-    )
-    print(f"cloned {table}")
+    try:
+        spark.sql(  # noqa: F821
+            f"CREATE OR REPLACE TABLE {CATALOG}.{SCHEMA}.{table} "
+            f"DEEP CLONE {CATALOG}.{SOURCE_SCHEMA}.{table}"
+        )
+        print(f"cloned {table}")
+    except AnalysisException:
+        spark.sql(  # noqa: F821
+            f"CREATE OR REPLACE TABLE {CATALOG}.{SCHEMA}.{table} "
+            f"AS SELECT * FROM {CATALOG}.{SOURCE_SCHEMA}.{table}"
+        )
+        print(f"copied {table} (CTAS — source is a streaming table / MV)")
+
+# CDF must survive the copy: notebook 05 reads the change feed of silver_orders
+spark.sql(  # noqa: F821
+    f"ALTER TABLE {CATALOG}.{SCHEMA}.silver_orders "
+    "SET TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')"
+)
 
 # COMMAND ----------
 

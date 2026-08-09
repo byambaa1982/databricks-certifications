@@ -1,44 +1,37 @@
 # 01 — Developing Code for Data Processing using Python and SQL (22%)
 
-The heaviest section of the exam. Everything here runs against the **real
-tables** deployed by [lakehouse-starter](https://github.com/byambaa1982/lakehouse-starter),
-so you can paste any snippet into a notebook or the SQL editor and see actual results.
+The heaviest section of the exam — **runnable Databricks notebooks**, not just
+notes. Everything targets `dev_catalog.de_pro`, a study schema cloned from the
+real [lakehouse-starter](https://github.com/byambaa1982/lakehouse-starter)
+deployment, so you can mutate tables freely and reset anytime.
 
-## The tables
+## Run order
 
-```sql
-USE CATALOG dev_catalog;
-USE SCHEMA dev_byambaa1982_lakehouse_starter;  -- your dev-mode prefix may differ: check `databricks bundle summary -t dev`
-SHOW TABLES;
-```
-
-| Table | Grain | Interesting columns |
-|---|---|---|
-| `bronze_orders` | raw order events (strings!) | `order_id`, `customer_id`, `amount DOUBLE`, `order_ts STRING`, `status`, `_rescued_data`, `_ingested_at`, `_source_file` |
-| `bronze_customers_cdc` | raw CDC events | `customer_id`, `op` (INSERT/UPDATE/DELETE), `event_ts STRING`, `name`, `email`, `tier` |
-| `silver_orders` | validated orders (CDF on) | `amount DECIMAL`, `order_ts TIMESTAMP`, `order_date DATE`, `status` |
-| `silver_customers` | SCD Type 2 dimension | `customer_id`, `tier`, `__START_AT`, `__END_AT` |
-| `gold_daily_revenue` | 1 row / day | `order_date`, `revenue`, `order_count`, `cancelled_count` |
-| `gold_customer_revenue` | 1 row / customer | `lifetime_value`, `completed_orders`, `last_order_ts` |
-
-Bronze keeps ingestion problems on purpose (bad rows, string timestamps) —
-which makes it perfect practice material for this section.
-
-## Study files
-
-| File | Exam objectives covered |
+| Notebook | What you practice |
 |---|---|
-| [`01-dataframe-transformations.md`](01-dataframe-transformations.md) | select/cast/when, joins, aggregations, narrow vs wide, `selectExpr` |
-| [`02-window-functions.md`](02-window-functions.md) | ranking, running totals, lag/lead, latest-row-per-key dedup |
-| [`03-udfs-and-higher-order-functions.md`](03-udfs-and-higher-order-functions.md) | Python vs pandas UDFs, SQL UDFs, `transform`/`filter`/`aggregate`, why built-ins win |
-| [`04-delta-dml-and-merge.md`](04-delta-dml-and-merge.md) | MERGE upserts, CDC dedup-then-merge, UPDATE/DELETE, schema evolution |
-| [`05-structured-streaming.md`](05-structured-streaming.md) | Auto Loader, Change Data Feed, triggers, output modes, watermarks |
+| [`00_setup.py`](00_setup.py) | Creates `dev_catalog.de_pro`: deep-clones the six medallion tables + a checkpoints volume. **Run this first, and re-run it to reset.** |
+| [`01_dataframe_transformations.py`](01_dataframe_transformations.py) | Casting bad bronze data, `when/otherwise`, `selectExpr`, SCD2 join fan-out (bug demonstrated live), point-in-time joins, NULL rules in aggregates, narrow vs wide |
+| [`02_window_functions.py`](02_window_functions.py) | `row_number` vs `rank` vs `dense_rank`, running totals and frames, `lag`/`lead`, latest-row-per-key CDC dedup |
+| [`03_udfs_and_higher_order_functions.py`](03_udfs_and_higher_order_functions.py) | Built-in vs Python UDF vs pandas UDF (same logic 3 ways), SQL UDFs in Unity Catalog, `transform`/`filter`/`aggregate`/`exists` |
+| [`04_delta_dml_and_merge.py`](04_delta_dml_and_merge.py) | CDC dedup-then-MERGE, `WHEN NOT MATCHED BY SOURCE`, UPDATE/DELETE, DESCRIBE HISTORY, time travel, RESTORE, MERGE schema evolution |
+| [`05_structured_streaming.py`](05_structured_streaming.py) | Delta-to-Delta streams, checkpoint semantics (proved live), Auto Loader on the real raw volume, Change Data Feed, trigger cheat sheet |
 
-## How to study this section
+## Setup
 
-1. Run each snippet, then **predict the output before executing** — the exam
-   shows you code and asks what happens.
-2. Re-run the seed job (`databricks bundle run lakehouse_job -t dev`) between
-   streaming exercises so new files actually arrive.
-3. Drill the matching section on [TestHub](https://testlogichub.com) under time
-   pressure — 22% weight means roughly 13 of 60 questions.
+Import this folder into your workspace (Repos → your fork, or
+`databricks workspace import-dir`), open `00_setup.py`, run it. Prereq: the
+lakehouse-starter bundle deployed to the same catalog
+(`databricks bundle deploy -t dev && databricks bundle run lakehouse_job -t dev`).
+
+Every notebook has `catalog` / `schema` widgets defaulting to
+`dev_catalog` / `de_pro` — change them if your setup differs.
+
+## How to study
+
+1. **Predict each cell's output before running it.** The exam shows code and
+   asks what happens — the notebooks are built around traps (fan-out joins,
+   NULL sums, checkpoint replays) that you'll now have *seen*, not memorized.
+2. Streaming notebook: run the seed job between passes so Auto Loader actually
+   has new files to pick up.
+3. Then drill this section on [TestHub](https://testlogichub.com) under time
+   pressure — 22% weight ≈ 13 of 60 questions.
