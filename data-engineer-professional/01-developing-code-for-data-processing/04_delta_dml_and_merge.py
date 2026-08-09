@@ -142,7 +142,8 @@ source = spark.sql(  # noqa: F821
 
 (
     DeltaTable.forName(spark, "dim_customers")  # noqa: F821
-    .merge(source, "dim_customers.customer_id = source.customer_id")
+    .alias("t")  # alias both sides — the source DataFrame's own plan alias (the
+    .merge(source.alias("s"), "t.customer_id = s.customer_id")  # temp view name) wins otherwise
     .withSchemaEvolution()
     .whenMatchedUpdateAll()
     .whenNotMatchedInsertAll()
