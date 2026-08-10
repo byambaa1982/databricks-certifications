@@ -1,10 +1,11 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # 01 — Preparing data for RAG: parse, chunk, filter
+# MAGIC # 01 — Extraction and chunking
 # MAGIC
-# MAGIC RAG quality is decided **before** the LLM sees anything: how documents
-# MAGIC are parsed, how they're split into chunks, and what gets filtered out.
-# MAGIC The chunking demo runs live on plain PySpark.
+# MAGIC RAG quality is mostly decided here. This notebook runs a real
+# MAGIC **token-aware chunker with overlap** and a structure-aware one, side by
+# MAGIC side, on the same corpus — so the trade-offs are visible in the output,
+# MAGIC not just described.
 
 # COMMAND ----------
 
@@ -18,89 +19,117 @@ spark.sql(f"USE {CATALOG}.{SCHEMA}")  # noqa: F821
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## The ingestion path
+# MAGIC ## Step 1 — extraction: get *text worth embedding*
 # MAGIC
-# MAGIC ```
-# MAGIC PDFs/HTML/docs in a UC VOLUME
-# MAGIC   -> parse (ai_parse_document / libraries)      extract text + structure
-# MAGIC   -> clean & filter                              drop boilerplate, dedupe, PII scrub (section 05)
-# MAGIC   -> chunk                                       the decisions below
-# MAGIC   -> Delta table (id, text, metadata)  ->  Vector Search index (section 04)
+# MAGIC | Source | Tool | Watch for |
+# MAGIC |---|---|---|
+# MAGIC | PDFs / images / scans in a volume | **`ai_parse_document`** (SQL, handles layout + OCR) | tables and multi-column layouts — verify, don't trust |
+# MAGIC | HTML | strip boilerplate (nav, footers, cookie banners) | boilerplate that survives gets retrieved forever |
+# MAGIC | wikis/markdown | keep the **heading structure** — it powers chunking | |
+# MAGIC | spreadsheets/tables | serialize rows to sentences or keep as structured data | naive text-dumps of tables embed terribly |
+# MAGIC
+# MAGIC ```sql
+# MAGIC SELECT path, ai_parse_document(content) AS parsed
+# MAGIC FROM READ_FILES('/Volumes/dev_catalog/genai_assoc/raw_docs', format => 'binaryFile')
 # MAGIC ```
 # MAGIC
-# MAGIC Everything lands in **Delta with Change Data Feed enabled** — that's what
-# MAGIC lets the index sync incrementally.
+# MAGIC > **Exam traps:**
+# MAGIC > - Filter **before** chunking: dedupe near-identical docs, drop obsolete
+# MAGIC >   versions, scrub PII (section 05 — *before embedding*, not after).
+# MAGIC > - Keep `source`, `section`, `updated_at` as **metadata columns** — they
+# MAGIC >   become retrieval filters and citations later. Discarding them during
+# MAGIC >   extraction is unrecoverable.
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Chunking — the sizing logic
-# MAGIC
-# MAGIC | Chunks too **big** | Chunks too **small** |
-# MAGIC |---|---|
-# MAGIC | retrieval imprecise (mixed topics per chunk) | context fragmentary — answers miss surrounding info |
-# MAGIC | fewer fit in the context window | more lookups needed; joins across chunks fail |
-# MAGIC
-# MAGIC | Strategy | How | When |
-# MAGIC |---|---|---|
-# MAGIC | fixed-size + **overlap** | N tokens, ~10–20% overlap | default; overlap protects sentences cut at borders |
-# MAGIC | **structure-aware** | split on headings/sections/paragraphs | docs with real structure (manuals, contracts) |
-# MAGIC | semantic | split where topic shifts (embedding distance) | long unstructured prose; costs compute |
-# MAGIC | parent-document / windowed | retrieve small chunk, hand the LLM its bigger parent | precision *and* context — the advanced answer |
+# MAGIC ## Step 2 — chunking, run for real
+# MAGIC Tokens ≈ words × 1.3 (English). Both chunkers below are pure Python —
+# MAGIC deterministic and runnable anywhere.
 
 # COMMAND ----------
 
-# a runnable structure-aware chunker over a toy corpus
+DOC = """# Setup
+Install the agent with pip. Configure OAuth credentials in the settings page.
+Restart after configuration. Verify the connection with the test button.
+# Usage
+Ask questions in plain language. The agent cites its sources.
+Review answers before forwarding to customers. Flag bad answers with thumbs down.
+# Limits
+Do not paste customer PII into prompts. Rate limits apply per user.
+Long documents are truncated at fifty pages. Contact support for quota increases."""
+
+def fixed_size_chunks(text, max_words=28, overlap_words=7):
+    words = text.replace("\n", " ").split()
+    step = max_words - overlap_words
+    return [" ".join(words[i:i + max_words]) for i in range(0, len(words), step)
+            if words[i:i + max_words]]
+
+def structure_chunks(text):
+    parts = [p.strip() for p in text.split("# ") if p.strip()]
+    return [f"# {p}" for p in parts]
+
+fixed = fixed_size_chunks(DOC)
+structured = structure_chunks(DOC)
+
+print(f"fixed-size w/ overlap: {len(fixed)} chunks")
+print(f"  e.g. …{fixed[0][-40:]!r} / {fixed[1][:40]!r}…  <- overlap preserves the seam")
+print(f"structure-aware:       {len(structured)} chunks (one per section)")
+for c in structured:
+    print(f"  {c.splitlines()[0]} ({len(c.split())} words)")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Reading the trade-off you just ran
+# MAGIC
+# MAGIC | | Fixed + overlap | Structure-aware |
+# MAGIC |---|---|---|
+# MAGIC | topic purity | can straddle sections | ✅ one topic per chunk |
+# MAGIC | size uniformity | ✅ predictable token budget | varies with the doc |
+# MAGIC | needs | nothing | real structure in the source |
+# MAGIC | overlap | protects sentences cut at borders | n/a (borders are semantic) |
+# MAGIC
+# MAGIC And the two failure directions to diagnose from symptoms:
+# MAGIC **too big** → retrieval imprecise (chunk matches on one topic, drags in
+# MAGIC three others), fewer chunks fit the context budget;
+# MAGIC **too small** → fragments with no context ("it must be restarted" —
+# MAGIC what must?), answers that need info split across chunks fail.
+# MAGIC
+# MAGIC > **Exam traps:**
+# MAGIC > - Chunk size must respect the **embedding model's input limit**
+# MAGIC >   (GTE-large ≈ 512 tokens) — oversized chunks get silently truncated
+# MAGIC >   at embedding time, and the *unembedded tail is unretrievable*.
+# MAGIC > - **Parent-document / small-to-big**: embed small chunks for precise
+# MAGIC >   matching, hand the LLM the surrounding parent section — the named
+# MAGIC >   fix when precision and context fight.
+# MAGIC > - Changing chunking = **re-embed + re-index everything**. It's a
+# MAGIC >   pipeline rerun, not a setting.
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Step 3 — land it in Delta, CDF on
+
+# COMMAND ----------
+
 from pyspark.sql import functions as F  # noqa: E402
 
-docs = spark.createDataFrame(  # noqa: F821
-    [(1, "intro.md", "# Setup\nInstall the agent.\nConfigure auth.\n# Usage\nAsk questions.\nReview answers.\n# Limits\nNo PII.\nRate limits apply."),
-     (2, "faq.md", "# Billing\nInvoices monthly.\n# Support\nEmail us.\nSLAs apply.")],
-    "doc_id INT, source STRING, text STRING",
-)
-chunks = (
-    docs.withColumn("chunk", F.explode(F.split("text", r"(?=# )")))
-    .filter(F.length(F.trim("chunk")) > 0)
-    .withColumn("chunk_id", F.concat_ws("-", "doc_id", F.abs(F.hash("chunk")) % 10000))
-    .select("chunk_id", "doc_id", "source", F.trim("chunk").alias("chunk_text"))
-)
-chunks.write.mode("overwrite").option("delta.enableChangeDataFeed", "true") \
-    .saveAsTable("doc_chunks")
+rows = [(f"doc1-{i}", "agent-guide.md", c.splitlines()[0].lstrip("# "), c)
+        for i, c in enumerate(structured)]
+chunks_df = spark.createDataFrame(  # noqa: F821
+    rows, "chunk_id STRING, source STRING, section STRING, chunk_text STRING"
+).withColumn("updated_at", F.current_timestamp())
+
+(chunks_df.write.mode("overwrite")
+ .option("delta.enableChangeDataFeed", "true")
+ .saveAsTable("doc_chunks"))
 display(spark.table("doc_chunks"))  # noqa: F821
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC > **Exam traps:**
-# MAGIC > - Keep **metadata columns** (source, section, date) with each chunk —
-# MAGIC >   they power filtered retrieval ("only 2024 policies") and citations.
-# MAGIC > - Chunk size is measured against the **embedding model's input limit**
-# MAGIC >   and the **LLM's context budget** — two different constraints.
-# MAGIC > - Changing the chunking strategy means **re-embedding and re-indexing**
-# MAGIC >   — it's not a config toggle on the index.
-# MAGIC > - `ai_parse_document` is the SQL-native answer for PDFs/images at scale;
-# MAGIC >   custom Python parsers are for formats it doesn't cover.
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## Did retrieval get better? Measure it
-# MAGIC Build a small eval set of (question → relevant chunk ids) and score:
-# MAGIC
-# MAGIC | Metric | Question it answers |
-# MAGIC |---|---|
-# MAGIC | **recall@k** | did the relevant chunk make the top-k at all? |
-# MAGIC | precision@k | how much of the top-k was relevant? |
-# MAGIC | NDCG / MRR | is the relevant chunk ranked *high*? |
-# MAGIC
-# MAGIC Compare chunking strategies **by these numbers**, not vibes — the exam
-# MAGIC phrase is "evaluate retrieval quality independently of generation".
-# MAGIC
-# MAGIC **Re-ranking**: retrieve a generous top-k with vector search, then let a
-# MAGIC cross-encoder / reranker model reorder and cut to the best few — the
-# MAGIC standard fix when recall is fine but the *right* chunk isn't first.
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## Cleanup — keep `doc_chunks` (section 04 indexes it)
+# MAGIC **Change Data Feed is required** for a Delta Sync vector index (section
+# MAGIC 04) — it's how the index learns which chunks changed instead of
+# MAGIC re-embedding the world. The schema shape to remember:
+# MAGIC `primary key + text column + metadata columns` — nothing exotic.

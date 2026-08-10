@@ -1,17 +1,29 @@
 # 03 — Application Development (30%)
 
-The heaviest section: assembling retriever + prompt + model + tools into an
-application, and fixing quality with the cheapest effective knob. The
-symptom → knob table is the section's core; around it sit the RAG prompt
-contract (ground, admit ignorance, cite), model access tiers (FM API vs
-provisioned throughput vs external), the embedding-model-must-match-index
-trap, function calling and the agent loop, multi-agent supervision, and
-layered guardrails.
+The heaviest section, now three notebooks deep. The RAG chain is written
+out as runnable code — stub retriever, real prompt contract where every
+line prevents a named failure — then shown again in LangChain's LCEL shape
+so you can read pipelines the exam displays. The agent loop **runs live**
+with a stubbed LLM: tool schemas, `tool_calls`, `role: "tool"` messages,
+iteration caps, UC functions as governed tools, and the multi-agent
+patterns. The closer is triage discipline: the symptom → first-knob table
+with the escalation order (prompt → retrieval → architecture → model size →
+fine-tuning), plus four guardrail layers with a runnable input filter and
+the failure-handling code every production chain wraps around model calls.
+
+## Run order
 
 | Notebook | What you practice |
 |---|---|
-| [`01_building_rag_and_agents.py`](01_building_rag_and_agents.py) | Prompt assembly spelled out, the symptom → knob table, model tiers, framework stance (loggable beats fashionable), tool schemas + the agent loop, UC functions as tools, multi-agent, the four guardrail layers |
+| [`01_building_rag_and_agents.py`](01_building_rag_and_agents.py) | The full chain runnable with a stub retriever, the prompt-contract table, the LCEL pipeline to recognize, multi-turn history policies and query rewriting |
+| [`02_agents_and_tools.py`](02_agents_and_tools.py) | The function-calling protocol and agent loop executed deterministically, tool-description and `role:"tool"` traps, UC function tools with `UCFunctionToolkit`, supervisor/pipeline/agent-as-tool patterns |
+| [`03_quality_knobs_and_guardrails.py`](03_quality_knobs_and_guardrails.py) | The triage table + escalation order, a runnable regex guard inside the four-layer model, indirect injection via retrieved docs, retries/validation/fallbacks/idempotent tools |
 
-**Study:** for every quality complaint, name the cheapest knob before
-reading options — "bigger model" is the standing distractor. 30% ≈ 13 of 45
-questions on [TestHub](https://testlogichub.com).
+## How to study
+
+1. Run the agent loop, then rewrite it from memory — the message roles and
+   the who-executes-what fact carry several questions.
+2. Recite the escalation order until reflexive; most quality questions are
+   "which knob first", and queue-jumping options are the distractors.
+3. Then drill this section on [TestHub](https://testlogichub.com) — 30% ≈ 13
+   of 45 questions, the most of any section.

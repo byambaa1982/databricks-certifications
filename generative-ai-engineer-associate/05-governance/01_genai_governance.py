@@ -1,59 +1,103 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # 01 — Governance: PII, injection, and licensing
+# MAGIC # 01 — Governance: PII, injection, licensing, audit
 # MAGIC
-# MAGIC The smallest section, three obligations: keep sensitive data out of the
-# MAGIC system (or masked inside it), survive malicious input, and respect
-# MAGIC licenses. Each maps to specific platform features.
+# MAGIC The smallest section, but its facts are absolute ("must never…"), which
+# MAGIC makes the questions easy points if you know *where each control must
+# MAGIC sit*. The PII scrub runs live — at the only stage where it fully works.
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## PII — mask BEFORE it reaches the index
-# MAGIC The retrieval corpus is a copy of your documents — anything sensitive in
-# MAGIC the chunks will eventually surface in an answer. Defense in depth:
+# MAGIC ## PII — the stage decides everything
+# MAGIC Embeddings and chunks are **copies**: PII that reaches the index will
+# MAGIC eventually surface in an answer, and vectors can't be "un-embedded".
 # MAGIC
-# MAGIC | Stage | Control |
+# MAGIC | Stage | Control | If you rely on it alone |
+# MAGIC |---|---|---|
+# MAGIC | **ingestion (the right one)** | scrub/pseudonymize during chunking — masked text is what gets embedded | ✅ PII never enters the system |
+# MAGIC | storage | UC grants on chunk table + index; masks on *source* tables | index copies aren't masked by source-table masks |
+# MAGIC | serving | AI Gateway PII detection on requests/responses | raw PII already sits in the index |
+# MAGIC | logging | inference tables are Delta — governed, but PII logged is PII stored | too late for prevention, still required hygiene |
+
+# COMMAND ----------
+
+# a runnable ingestion-stage scrub — regex for the deterministic layer
+import re  # noqa: E402
+
+PII_PATTERNS = [
+    (re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.]+\b"), "<EMAIL>"),
+    (re.compile(r"\b\d{3}-\d{2}-\d{4}\b"), "<SSN>"),
+    (re.compile(r"\b(?:\+?1[-. ]?)?\(?\d{3}\)?[-. ]?\d{3}[-. ]?\d{4}\b"), "<PHONE>"),
+]
+
+def scrub(text: str) -> str:
+    for pattern, token in PII_PATTERNS:
+        text = pattern.sub(token, text)
+    return text
+
+raw = ("Customer Bat (bat@example.com, 555-867-5309, SSN 123-45-6789) "
+       "reported the login bug on the checkout page.")
+print(scrub(raw))
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC Regex catches formatted PII; **names and free-form identifiers need an
+# MAGIC NER/LLM pass** — `ai_query` with an extraction prompt (or a PII model)
+# MAGIC over the corpus is the scalable second layer. Pseudonymize (`<CUST_017>`)
+# MAGIC rather than delete when downstream joins still need identity.
+# MAGIC
+# MAGIC > **Exam trap:** "add PII masking at query time" for a corpus already
+# MAGIC > embedded raw = wrong stage. The remediation is **re-ingest scrubbed +
+# MAGIC > rebuild the index** (and vacuum the old chunks) — expensive, which is
+# MAGIC > why the design answer is always ingestion-stage.
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Malicious input — the attack/defense table
+# MAGIC
+# MAGIC | Attack | Vector | Defense |
+# MAGIC |---|---|---|
+# MAGIC | direct prompt injection | "ignore your instructions…" in user input | input classifier + hardened system prompt + Gateway safety filter |
+# MAGIC | **indirect injection** | instructions hidden in **retrieved docs** / tool outputs | delimit context as data; sanitize corpus at ingestion; output-check before returning |
+# MAGIC | prompt extraction | "print your system prompt" | refusal rules + output filters; assume prompts are *not* secrets |
+# MAGIC | tool abuse / exfiltration | agent talked into misusing a tool | **least-privilege UC grants on tools**; no admin agents; cap loops |
+# MAGIC | DoS / cost abuse | flooding the endpoint | AI Gateway **rate limits** per user/endpoint |
+# MAGIC
+# MAGIC Layering is the exam's answer pattern — each row's defense fails
+# MAGIC somewhere the next layer catches.
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## AI Gateway — governance's enforcement point
+# MAGIC Configured **on the serving endpoint**, applies to every caller:
+# MAGIC
+# MAGIC | Feature | Governs |
 # MAGIC |---|---|
-# MAGIC | ingestion (best) | scrub/pseudonymize during chunking — regex + `ai_query`-based PII detection; masked text is what gets embedded |
-# MAGIC | storage | UC grants on the chunk table + index; column masks on source tables (the engineering tracks' machinery) |
-# MAGIC | serving | **AI Gateway PII detection** on requests/responses |
-# MAGIC | logging | inference tables inherit UC governance — PII in logs is still PII |
+# MAGIC | guardrails: safety filters, **PII detection**, topic/keyword denylists | content in and out |
+# MAGIC | **rate limits** (per user / per endpoint) | abuse and cost |
+# MAGIC | usage tracking + **payload logging** (inference tables) | audit and monitoring |
+# MAGIC | fallbacks / traffic routing across endpoints | resilience |
 # MAGIC
-# MAGIC > **Exam trap:** masking at *query time only* is too late if raw PII was
-# MAGIC > embedded — vectors and chunks retain it. The right stage is
-# MAGIC > **before embedding**.
+# MAGIC The recurring justification: app-level checks can be forgotten by one
+# MAGIC team; **Gateway policies are central and unskippable**.
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Malicious input — prompt injection and friends
-# MAGIC
-# MAGIC | Attack | Defense |
-# MAGIC |---|---|
-# MAGIC | prompt injection ("ignore your instructions…") | system-prompt hardening + **input classification/guardrails** (Llama Guard-style, AI Gateway safety filters) |
-# MAGIC | indirect injection (instructions hidden in *retrieved docs*) | treat retrieved text as **data, not instructions** in the prompt; sanitize corpus at ingestion |
-# MAGIC | data exfiltration via tools | least-privilege tools — agents run with governed UC permissions, not admin |
-# MAGIC | abuse / DoS | AI Gateway **rate limits** per user/endpoint |
-# MAGIC
-# MAGIC Layered is the answer pattern: prompt rules alone are bypassable;
-# MAGIC platform-level (Gateway) + scoped permissions is what the exam rewards.
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## Licensing and compliance — the checklist
-# MAGIC - **Model licenses**: open weights ≠ do-anything — e.g. Llama's license
-# MAGIC   has use conditions; commercial use of a model must be permitted by its
-# MAGIC   license.
-# MAGIC - **Data licenses**: the corpus you embed must be licensed for that use —
-# MAGIC   scraped or third-party content can carry restrictions the app inherits.
-# MAGIC - **Data residency/processing**: sensitive data staying in-platform (FM
-# MAGIC   API / provisioned throughput inside Databricks) vs leaving to external
-# MAGIC   APIs is a compliance decision, not just a latency one.
-# MAGIC - **Auditability**: UC lineage + inference tables give the who-asked-what
-# MAGIC   trail; regulated deployments must be able to answer it.
-# MAGIC
-# MAGIC > **Exam trap:** "the model is open source, so no restrictions" — open
-# MAGIC > *weights* still ship with licenses; checking them is a listed exam
-# MAGIC > objective.
+# MAGIC ## Licensing and audit — the checklist
+# MAGIC - **Model licenses**: open weights ship with licenses (Llama's has use
+# MAGIC   conditions) — commercial use must be permitted. "Open source = no
+# MAGIC   restrictions" is a planted wrong answer.
+# MAGIC - **Corpus licenses**: scraped/third-party content carries terms the app
+# MAGIC   inherits; "we can technically ingest it" ≠ "we may".
+# MAGIC - **Data residency**: sensitive data staying in-platform (FM APIs /
+# MAGIC   provisioned throughput) vs leaving to external APIs is a compliance
+# MAGIC   choice — the governed external-model endpoint at least keeps logging
+# MAGIC   and control.
+# MAGIC - **Auditability**: UC lineage (source → chunks → index → app) +
+# MAGIC   inference tables answer "who asked what, and what did we answer" —
+# MAGIC   regulated deployments must be able to.

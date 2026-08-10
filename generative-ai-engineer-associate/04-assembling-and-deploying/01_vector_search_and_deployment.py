@@ -1,99 +1,99 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # 01 — Vector Search, chain logging, and deployment
+# MAGIC # 01 — Vector Search, in working detail
 # MAGIC
-# MAGIC The shipping section: index the chunks, log the chain as a model,
-# MAGIC register it in UC, serve it — plus MCP and prompt versioning, the two
-# MAGIC newest exam additions.
+# MAGIC The index is infrastructure with real decisions: endpoint vs index,
+# MAGIC which index type, who computes embeddings, when it syncs, and how
+# MAGIC queries filter. Each decision is a question format.
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Vector Search — one endpoint, two index types
+# MAGIC ## Object model — endpoint ≠ index
 # MAGIC
-# MAGIC | | **Delta Sync index** | Direct Vector Access index |
+# MAGIC ```
+# MAGIC VECTOR SEARCH ENDPOINT            (compute that serves queries; hosts many indexes)
+# MAGIC └── INDEX                         (a UC object: catalog.schema.index_name)
+# MAGIC     ├── Delta Sync index          <- from a Delta table, stays in sync
+# MAGIC     └── Direct Vector Access      <- you push vectors via API
+# MAGIC ```
+# MAGIC
+# MAGIC | Decision | Options | Pick |
 # MAGIC |---|---|---|
-# MAGIC | Source | a Delta table (**CDF enabled**) | you push vectors via API |
-# MAGIC | Stays current | **automatically** (continuous or triggered sync) | you manage updates |
-# MAGIC | Embeddings | computed **for you** (managed, from a text column) or self-provided | self-provided |
-# MAGIC | Exam default | ✅ this one | niche/custom pipelines |
+# MAGIC | index type | **Delta Sync** vs Direct Access | Delta Sync unless vectors are produced outside Databricks |
+# MAGIC | embeddings | **managed** (from a text column, model you name) vs self-managed (a vector column you computed) | managed unless you need a custom embedding pipeline |
+# MAGIC | sync mode | **`TRIGGERED`** (on demand / by your pipeline) vs `CONTINUOUS` (always-on, lowest staleness) | triggered for batch-updated corpora; continuous when freshness is the requirement |
+# MAGIC
+# MAGIC > **Exam traps:**
+# MAGIC > - Delta Sync **requires Change Data Feed** on the source table — the
+# MAGIC >   error "CDF not enabled" question.
+# MAGIC > - `CONTINUOUS` costs always-on compute; "docs update nightly" →
+# MAGIC >   `TRIGGERED` + `index.sync()` after the pipeline writes.
+# MAGIC > - Managed embeddings pin the **embedding endpoint on the index** —
+# MAGIC >   queries are embedded by the *same model automatically*. Self-managed
+# MAGIC >   embeddings move that consistency burden to you (`query_vector`).
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## The full API surface to recognize
 # MAGIC
 # MAGIC ```python
 # MAGIC from databricks.vector_search.client import VectorSearchClient
 # MAGIC vsc = VectorSearchClient()
+# MAGIC
 # MAGIC vsc.create_endpoint(name="rag-endpoint", endpoint_type="STANDARD")
+# MAGIC
 # MAGIC index = vsc.create_delta_sync_index(
 # MAGIC     endpoint_name="rag-endpoint",
 # MAGIC     index_name="dev_catalog.genai_assoc.doc_chunks_index",
 # MAGIC     source_table_name="dev_catalog.genai_assoc.doc_chunks",
 # MAGIC     primary_key="chunk_id",
-# MAGIC     embedding_source_column="chunk_text",                  # managed embeddings
+# MAGIC     embedding_source_column="chunk_text",                    # managed embeddings
 # MAGIC     embedding_model_endpoint_name="databricks-gte-large-en",
 # MAGIC     pipeline_type="TRIGGERED",
 # MAGIC )
-# MAGIC hits = index.similarity_search(query_text="how do I configure auth?",
-# MAGIC                                columns=["chunk_id", "chunk_text", "source"],
-# MAGIC                                num_results=3)
+# MAGIC
+# MAGIC # querying — the four variants
+# MAGIC index.similarity_search(query_text="configure auth",          # 1. semantic
+# MAGIC                         columns=["chunk_id", "chunk_text", "source"],
+# MAGIC                         num_results=3)
+# MAGIC index.similarity_search(query_text="error QX-1042",           # 2. hybrid
+# MAGIC                         columns=[...], num_results=3,
+# MAGIC                         query_type="HYBRID")                  #    vector + keyword
+# MAGIC index.similarity_search(query_text="configure auth",          # 3. filtered
+# MAGIC                         columns=[...], num_results=3,
+# MAGIC                         filters={"source": "agent-guide.md"})
+# MAGIC index.similarity_search(query_vector=[0.12, ...],             # 4. self-managed
+# MAGIC                         columns=[...], num_results=3)
+# MAGIC
+# MAGIC index.sync()                          # triggered refresh after new chunks land
 # MAGIC ```
 # MAGIC
 # MAGIC > **Exam traps:**
-# MAGIC > - Delta Sync **requires Change Data Feed** on the source table.
-# MAGIC > - `TRIGGERED` sync = on demand/schedule (cheaper); `CONTINUOUS` = lowest
-# MAGIC >   staleness (always-on cost).
-# MAGIC > - **Hybrid search** (vector + keyword) is the toggle for exact-term
-# MAGIC >   queries (IDs, SKUs) that pure semantic search fumbles.
-# MAGIC > - Filters on metadata columns happen **in** `similarity_search` —
-# MAGIC >   that's why section 02 kept metadata per chunk.
+# MAGIC > - **Hybrid** (`query_type="HYBRID"`) is the fix for exact-term queries
+# MAGIC >   (IDs, SKUs, error codes) that pure semantic search fumbles — a query
+# MAGIC >   option, not a re-index.
+# MAGIC > - **Filters** run on the metadata columns section 02 preserved —
+# MAGIC >   "restrict answers to 2024 policies" is a filter, not a second index.
+# MAGIC > - The index is a **UC object**: grants (`SELECT` on the index),
+# MAGIC >   lineage to the source table, three-level name. Access control on RAG
+# MAGIC >   = grants on index + serving endpoint (not prompt rules).
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Log the chain as a model — models-from-code
+# MAGIC ## Sizing `num_results` (k)
+# MAGIC k is a budget decision, not a bigger-is-better dial: each chunk spends
+# MAGIC context tokens (section 01's arithmetic) and adds distraction risk;
+# MAGIC too-small k gambles recall. The measured pattern: generous k → re-ranker
+# MAGIC → top 3–5 into the prompt (section 02's numbers justify each step).
 # MAGIC
-# MAGIC ```python
-# MAGIC # chain.py defines the chain and ends with:  mlflow.models.set_model(chain)
-# MAGIC with mlflow.start_run():
-# MAGIC     mlflow.langchain.log_model(          # or mlflow.pyfunc for custom classes
-# MAGIC         lc_model="chain.py",             # <- code file, not a pickle
-# MAGIC         artifact_path="chain",
-# MAGIC         registered_model_name="dev_catalog.genai_assoc.rag_chain",
-# MAGIC         resources=[...],                 # endpoints/indexes the chain calls
-# MAGIC         input_example={"messages": [{"role": "user", "content": "hi"}]},
-# MAGIC     )
-# MAGIC ```
+# MAGIC ## Troubleshooting table
 # MAGIC
-# MAGIC Models-from-code (a `.py` file, not serialized objects) is the current
-# MAGIC recommendation — reviewable, no pickle fragility. `resources` declares
-# MAGIC the endpoints/indexes so serving can authenticate to them on the model's
-# MAGIC behalf (automatic auth passthrough) — the answer to "how does the served
-# MAGIC chain reach Vector Search?".
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## Deploy — agents.deploy or endpoint config
-# MAGIC
-# MAGIC ```python
-# MAGIC from databricks import agents
-# MAGIC agents.deploy("dev_catalog.genai_assoc.rag_chain", model_version, scale_to_zero=True)
-# MAGIC ```
-# MAGIC
-# MAGIC `agents.deploy` = Model Serving endpoint **plus** the agent extras: the
-# MAGIC **Review App** (SMEs chat with the app and give feedback), inference
-# MAGIC tables on, trace logging wired. A plain chat UI for stakeholders without
-# MAGIC building a frontend — that phrase in a question means Review App.
-# MAGIC
-# MAGIC ## MCP servers — tools over a protocol
-# MAGIC **Model Context Protocol** standardizes how agents reach tools/data:
-# MAGIC Databricks provides **managed MCP servers** (Vector Search, UC functions,
-# MAGIC Genie) and you can host custom ones (Databricks Apps). Exam-level: MCP =
-# MAGIC the open protocol that lets agents (including external ones) consume
-# MAGIC governed Databricks tools without bespoke integration code.
-# MAGIC
-# MAGIC ## Prompt versioning & CI/CD
-# MAGIC - **MLflow Prompt Registry**: prompts as versioned UC assets —
-# MAGIC   `mlflow.genai.register_prompt(...)`, load by version/alias in the
-# MAGIC   chain; change the prompt without redeploying code.
-# MAGIC - CI/CD is the ML story (bundles, per-env catalogs, `@champion` aliases,
-# MAGIC   validation gates) applied to chains — see ML Professional
-# MAGIC   [`02-mlops`](../../machine-learning-professional/02-mlops/).
+# MAGIC | Symptom | Cause |
+# MAGIC |---|---|
+# MAGIC | new docs never appear in answers | `TRIGGERED` index nobody syncs — call `index.sync()` in the ingestion job |
+# MAGIC | garbage similarity scores after a model swap | corpus and queries embedded by **different models** — re-index |
+# MAGIC | "CDF not enabled" on index creation | `ALTER TABLE … SET TBLPROPERTIES (delta.enableChangeDataFeed = true)` |
+# MAGIC | great answers in tests, permission errors when served | the **served model's** identity lacks index access — declare `resources` at logging time (notebook 02) |
