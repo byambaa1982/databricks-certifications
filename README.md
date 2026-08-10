@@ -10,26 +10,34 @@ Sister repo to [**lakehouse-starter**](https://github.com/byambaa1982/lakehouse-
 |---|---|---|
 | [`data-engineer-associate/`](data-engineer-associate/) | [Data Engineer Associate](https://www.databricks.com/learn/certification/data-engineer-associate) | ✅ Earned — [credential](https://credentials.databricks.com/056070f5-1581-4e24-8996-82b1f1e23b20#acc.3C6pjHkb) |
 | [`data-engineer-professional/`](data-engineer-professional/) | [Data Engineer Professional](https://www.databricks.com/learn/certification/data-engineer-professional) | ✅ Earned — [credential](https://credentials.databricks.com/d9114e66-f556-4da1-a383-fc65cb512027#acc.8lQgipFn) |
-| [`data-analyst-associate/`](data-analyst-associate/) | [Data Analyst Associate](https://www.databricks.com/learn/certification/data-analyst-associate) | 📋 Planned |
-| [`machine-learning-associate/`](machine-learning-associate/) | [Machine Learning Associate](https://www.databricks.com/learn/certification/machine-learning-associate) | 📋 Planned |
-| [`machine-learning-professional/`](machine-learning-professional/) | [Machine Learning Professional](https://www.databricks.com/learn/certification/machine-learning-professional) | 📋 Planned |
-| [`generative-ai-engineer-associate/`](generative-ai-engineer-associate/) | [Generative AI Engineer Associate](https://www.databricks.com/learn/certification/genai-engineer-associate) | 📋 Planned |
-| [`apache-spark-developer-associate/`](apache-spark-developer-associate/) | [Associate Developer for Apache Spark](https://www.databricks.com/learn/certification/apache-spark-developer-associate) | 📋 Planned |
-| [`resources/`](resources/) | Cross-exam material: cheat sheets, links, exam-day notes | — |
+| [`data-analyst-associate/`](data-analyst-associate/) | [Data Analyst Associate](https://www.databricks.com/learn/certification/data-analyst-associate) | 📚 Studying |
+| [`machine-learning-associate/`](machine-learning-associate/) | [Machine Learning Associate](https://www.databricks.com/learn/certification/machine-learning-associate) | 📚 Studying |
+| [`machine-learning-professional/`](machine-learning-professional/) | [Machine Learning Professional](https://www.databricks.com/learn/certification/machine-learning-professional) | 📚 Studying |
+| [`generative-ai-engineer-associate/`](generative-ai-engineer-associate/) | [Generative AI Engineer Associate](https://www.databricks.com/learn/certification/genai-engineer-associate) | 📚 Studying |
+| [`apache-spark-developer-associate/`](apache-spark-developer-associate/) | [Associate Developer for Apache Spark](https://www.databricks.com/learn/certification/apache-spark-developer-associate) | 📚 Studying |
+| [`resources/`](resources/) | Cross-exam material: the [cheat sheet](resources/cross-exam-cheat-sheet.md), [lab environments map](resources/lab-environments.md), [exam-day notes](resources/exam-day-notes.md) | — |
 
-Each certification folder will follow the same shape as content lands:
+Every certification folder follows the same shape:
 
 ```
 <certification>/
-├── notes/          # topic-by-topic study notes mapped to the official exam guide
-├── practice/       # worked questions with explanations
-└── labs/           # hands-on exercises (most run against lakehouse-starter)
+├── README.md                      # the exam's sections + weights, mapped to folders
+└── NN-<section-name>/             # one folder per OFFICIAL exam-guide section
+    ├── README.md                  # run order, setup, how to study, the section's traps
+    ├── 00_setup.py                # (where needed) builds deterministic practice data
+    └── NN_<topic>.py              # runnable Databricks notebooks with exam-trap callouts
 ```
+
+Notebooks are stored as `.py` source (`# Databricks notebook source`) —
+import a folder into your workspace and run them. Practice data is
+hash-deterministic with blemishes planted where lessons need them; the
+[lab environments map](resources/lab-environments.md) shows what each track
+builds and how to reset it.
 
 ## How I study
 
-1. **Read the official exam guide first** — every exam page above links one. The notes folders mirror its section headings, so coverage gaps are visible.
-2. **Do it, don't just read it** — each concept gets a hands-on lab, usually against a [lakehouse-starter](https://github.com/byambaa1982/lakehouse-starter) dev deployment (serverless — a run costs cents).
+1. **Read the official exam guide first** — every exam page above links one. The section folders mirror its headings and weights, so coverage gaps are visible.
+2. **Do it, don't just read it** — every concept that can run, runs: predict each cell's output before executing it, because that's exactly the skill the exams test. Labs lean on a [lakehouse-starter](https://github.com/byambaa1982/lakehouse-starter) dev deployment (serverless — a run costs cents).
 3. **Drill with timed practice tests** — I built [TestHub](https://testlogichub.com) for exactly this: timed practice exams with explanations, starting with Data Engineer Associate.
 
 ## Related
