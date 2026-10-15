@@ -10,6 +10,7 @@ matching folder.
 | # | Video | Notebook | Track / section |
 |---|---|---|---|
 | 01 | Delta time travel (coming) | [`data-engineer-associate/01_delta_time_travel.py`](data-engineer-associate/01_delta_time_travel.py) | [DE Associate 03 — Data Transformation and Modeling](../data-engineer-associate/03-data-transformation-and-modeling/) |
+| 02 | Exam question: CREATE TABLE IF NOT EXISTS vs CREATE OR REPLACE TABLE (DE Associate Q60) | [`data-engineer-associate/02_create_table_if_not_exists_vs_create_or_replace.py`](data-engineer-associate/02_create_table_if_not_exists_vs_create_or_replace.py) | [DE Associate 03 — Data Transformation and Modeling](../data-engineer-associate/03-data-transformation-and-modeling/) |
 
 Conventions:
 
